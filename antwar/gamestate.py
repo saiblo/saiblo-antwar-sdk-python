@@ -399,6 +399,7 @@ class GameState:
                     self.ants,
             ):
                 ant.hp -= 100
+                ant.state = AntState.FAIL
                 self.coin[1 - ant.player] += Ant.coin_of_level(ant.level)
 
         # 2. tower attack
