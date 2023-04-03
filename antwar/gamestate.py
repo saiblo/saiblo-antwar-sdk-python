@@ -1,6 +1,5 @@
 # pylint: disable=invalid-name, missing-module-docstring, missing-class-docstring, too-few-public-methods, no-member
 from dataclasses import dataclass, field
-from random import random
 from typing import Optional, TypeVar
 from .coord import Coord, is_player_highland, distance, neighbor, headquarter_coord
 from .gamedata import (
@@ -58,11 +57,11 @@ class GameState:
     phero: list[Pheromone] = field(default_factory=lambda: [Pheromone(), Pheromone()])  #: 双方信息素
     gen_speed_lv: list[int] = field(default_factory=lambda: [0, 0])  #: 双方蚂蚁生产速度等级
     ant_maxhp_lv: list[int] = field(default_factory=lambda: [0, 0])  #: 双方蚂蚁最大血量等级
+    operated_tower_id: list[int] = field(default_factory=list)
+    """该回合已经操作过的防御塔ID列表。请注意：如果不使用 :meth:`antwar.gamestate.GameState.simulate_next_round` 进入下一回合，请手动清除其中的内容！ """
 
     next_ant_id: int = 0  #: 下一个蚂蚁的ID标号。双方共用一个编号序列。
     next_tower_id: int = 0  #: 下一个防御塔的ID标号。双方共用一个编号序列。
-
-    __mini_replay_name: str = f"mini-replay-{int(random() * 10000)}.txt"
 
     def init_with_seed(self, seed: int) -> None:
         """初始化双方信息素"""
@@ -242,7 +241,8 @@ class GameState:
                     and not self.check_in_emp_range(player, c)
             )
             if valid and not dry_run:
-                self.build_tower(player, c)
+                tower = self.build_tower(player, c)
+                self.operated_tower_id.append(tower.id)
                 self.coin[player] -= cost
             return valid
         if op.type == OperationType.UPGRADE_TOWER:
@@ -251,12 +251,14 @@ class GameState:
             cost = self.upgrade_tower_cost(newtype)
             valid = (
                     t is not None
+                    and t.id not in self.operated_tower_id
                     and t.player == player
                     and self.coin[player] >= cost
                     and not self.check_in_emp_range(player, c)
                     and can_tower_upgrade_to(t.type, newtype)
             )
             if valid and not dry_run:
+                self.operated_tower_id.append(t.id)
                 self.upgrade_tower(op.arg0, TowerType(op.arg1))
                 self.coin[player] -= cost
             return valid
@@ -264,10 +266,12 @@ class GameState:
             t = self.tower_of_id(op.arg0)
             valid = (
                     t is not None
+                    and t.id not in self.operated_tower_id
                     and t.player == player
                     and not self.check_in_emp_range(player, c)
             )
             if valid and not dry_run:
+                self.operated_tower_id.append(t.id)
                 self.downgrade_tower(op.arg0)
                 self.coin[player] += self.downgrade_tower_income(op.arg0)
             return valid
@@ -387,6 +391,8 @@ class GameState:
             3. 更新回合数和金币数
             4. 检查各个超级武器是否还在生效
         """
+        for ant in self.ants:
+            ant.age += 1
 
         # 1. lightning storm
         for lightning in filter(
@@ -497,13 +503,10 @@ class GameState:
         self.round += 1
         self.coin[0] += 1
         self.coin[1] += 1
-        self.dump_mini_replay()
 
         for ant in filter(lambda ant: ant.state == AntState.FROZEN, self.ants):
             ant.state = AntState.ALIVE
         self.ants = list(filter(lambda ant: ant.state == AntState.ALIVE, self.ants))
-        for ant in self.ants:
-            ant.age += 1
 
         for sw in self.active_super_weapon:
             sw.duration -= 1
@@ -511,25 +514,38 @@ class GameState:
             filter(lambda sw: sw.duration > 0, self.active_super_weapon)
         )
 
-    def dump_mini_replay(self) -> None:
-        """输出“迷你回放文件”所用的接口。可以用来辅助本地调试工作。"""
-        with open(self.__mini_replay_name, "a", encoding="utf-8") as f:
-            def fprint(*args, **kwargs):
-                print(*args, file=f, **kwargs)
+        for p in range(2):
+            for sw in range(4):
+                self.super_weapon_cd[p][sw] = max(0, self.super_weapon_cd[p][sw] - 1)
 
-            fprint(self.round)
-            fprint(len(self.towers))
-            for tower in self.towers:
-                fprint(
-                    f"{tower.id} {tower.player} {tower.coord.x} {tower.coord.y} {tower.type.value} {tower.cd}"
-                )
-            fprint(len(self.ants))
-            for ant in self.ants:
-                fprint(
-                    f"{ant.id} {ant.player} {ant.coord.x} {ant.coord.y} {ant.hp} {ant.level} {ant.age} {ant.state}"
-                )
-            fprint(f"{self.coin[0]} {self.coin[1]}")
-            fprint(f"{self.hp[0]} {self.hp[1]}")
-            for p in self.phero:
-                for row in p.value:
-                    fprint(" ".join(map(lambda value: f"{value:.4f}", row)))
+        self.operated_tower_id = []
+
+    def dump_mini_replay(self) -> str:
+        """
+        输出“迷你回放文件”所用的接口。可以用来辅助本地调试工作。
+
+        迷你回放文件的格式如下：
+
+        1. 第一行为当前回合数
+        2. 第二行为防御塔数量，接下来每行为一个防御塔的信息，依次为：ID，归属玩家，坐标，类型，CD
+        3. 然后是蚂蚁数量，接下来每行为一只蚂蚁的信息，依次为：ID，归属玩家，坐标，HP，等级，年龄，状态
+        4. 接下来两行分别是双方金币数量和双方主基地血量
+        5. 最后是双方的信息素矩阵，每个信息素矩阵都是19x19个浮点数，保留小数点后四位
+        """
+        output = ""
+
+        output += f"{self.round}\n"
+        output += f"{len(self.towers)}\n"
+        for tower in self.towers:
+            output += f"{tower.id} {tower.player} {tower.coord.x} {tower.coord.y} {tower.type.value} {tower.cd}\n"
+        output += f"{len(self.ants)}\n"
+        for ant in self.ants:
+            output += f"{ant.id} {ant.player} {ant.coord.x} {ant.coord.y} {ant.hp} {ant.level} {ant.age} {ant.state}\n"
+        output += f"{self.coin[0]} {self.coin[1]}\n"
+        output += f"{self.hp[0]} {self.hp[1]}\n"
+        for p in self.phero:
+            for row in p.value:
+                output += " ".join(map(lambda value: f"{value:.4f}", row))
+                output += "\n"
+
+        return output
