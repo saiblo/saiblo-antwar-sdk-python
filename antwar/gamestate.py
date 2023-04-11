@@ -467,6 +467,7 @@ class GameState:
             ant.path.append(new_coord)
             if new_coord == headquarter_coord(1 - ant.player):
                 ant.state = AntState.SUCCESS
+                self.coin[ant.player] += 5
                 self.hp[1 - ant.player] -= 1
 
         # 5. pheromone update
