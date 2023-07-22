@@ -8,8 +8,9 @@ def write_to_judger(msg: str) -> None:
     :param msg: 需要输出的消息
     :type msg: str
     """
-    msg = int.to_bytes(len(msg), length=4, byteorder="big", signed=False).decode("UTF-8") + msg
-    print(msg, end="", flush=True)
+    sys.stdout.buffer.write(int.to_bytes(len(msg), length=4, byteorder="big", signed=False))
+    sys.stdout.buffer.write(msg.encode())
+    sys.stdout.buffer.flush()
 
 
 def debug(msg: str) -> None:
